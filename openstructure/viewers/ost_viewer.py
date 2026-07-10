@@ -1,12 +1,17 @@
+from tkinter import messagebox
 import os
 
 from pwem.viewers import Chimera
 from pyworkflow.viewer import Viewer
 import pyworkflow.viewer as pwviewer
+from pwchem.viewers import PyMolViewer
 
 from openstructure.protocols import ProtCompareStructures
+from Bio.PDB import PDBParser
 
-from pyworkflow.protocol.params import LabelParam, BooleanParam
+from pwchem.__init__ import Plugin as pwchemPlugin
+
+from pyworkflow.protocol.params import LabelParam, BooleanParam, EnumParam
 from pyworkflow.viewer import Viewer
 from pwem.viewers import Chimera
 import json
@@ -19,8 +24,11 @@ class ProtCompareStructuresViewer(pwviewer.ProtocolViewer):
     _label = "viewer compare structures"
     _targets = [ProtCompareStructures]
 
+
     def __init__(self, **args):
         super().__init__(**args)
+        self.CHOICES = self._getInterfaceChoices()
+
 
     def _defineParams(self, form):
 
@@ -43,13 +51,31 @@ class ProtCompareStructuresViewer(pwviewer.ProtocolViewer):
                       LabelParam,
                       label='Summary table')
 
+        group = form.addGroup('Visualize with PLIP')
+        group.addParam('interfaceChoice', EnumParam, default=0, choices=self.CHOICES,
+                       label='Display chain interactions: ',
+                       help='Display this interface interactions.')
+        form.addParam('showPLIPinterface',
+                      LabelParam,
+                      label='Open PLIP ')
+
     def _getVisualizeDict(self):
         return {
             'showAlignment': self._viewAlignment,
             'showLocalLDDT': self._viewLocalLDDT,
             'showInterfaces': self._viewInterfaces,
-            'showSummary': self._viewSummary
+            'showSummary': self._viewSummary,
+            'showPLIPinterface': self._viewPLIPInterface,
         }
+
+    def _getInterfaceChoices(self):
+        jsonFile = self.protocol._getPath("compare_structures.json")
+        if not os.path.exists(jsonFile):
+            return ["No interfaces"]
+        with open(jsonFile) as f:
+            data = json.load(f)
+        chains = data.get("model_chains", [])
+        return chains if chains else ["No interfaces"]
 
     def _viewAlignment(self, paramName=None):
         if self.colorLDDT.get():
@@ -214,3 +240,73 @@ class ProtCompareStructuresViewer(pwviewer.ProtocolViewer):
 
         plt.tight_layout()
         plt.show()
+
+    def _viewPLIPInterface(self, param=None):
+        chain = self._getInterfaceChoices()[self.interfaceChoice.get()]
+
+        stype = self._getStructureType()
+        pmlDir = os.path.abspath(self.protocol._getExtraPath("plip_interface"))
+        os.makedirs(pmlDir, exist_ok=True)
+
+        structures = [s.clone() for s in self.protocol.outputCleanStructures]
+        modelFile = os.path.abspath(structures[0].getFileName())
+
+        if stype == "dna" or stype == "rna":
+            args = f"-f {modelFile} --dnareceptor --inter {chain} -y -o {pmlDir}"
+        else:
+            args = f"-f {modelFile} --inter {chain} -y -o {pmlDir}"
+
+        pwchemPlugin.runPLIP(args, cwd=pmlDir)
+
+        pseFile = None
+        for root, _, files in os.walk(pmlDir):
+            for f in files:
+                if f.endswith(".pse"):
+                    pseFile = os.path.join(root, f)
+                    break
+            if pseFile:
+                break
+
+
+        if pseFile is None:
+            messagebox.showwarning(
+                "PLIP",
+                f"No interactions were found for {chain}."
+            )
+            return []
+
+        pymolV = PyMolViewer(project=self.getProject())
+        return pymolV._visualize(
+            os.path.abspath(pseFile),
+            cwd=os.path.dirname(pseFile)
+        )
+
+    def _getStructureType(self):
+        structures = [s.clone() for s in self.protocol.outputCleanStructures]
+        modelFile = os.path.abspath(structures[0].getFileName())
+
+        parser = PDBParser(QUIET=True)
+        structure = parser.get_structure("model", modelFile)
+
+        hasDNA = False
+        hasRNA = False
+
+        DNA_RES = {"DA", "DT", "DG", "DC", "DI"}
+        RNA_RES = {"A", "U", "G", "C", "I"}
+
+        for residue in structure.get_residues():
+            if residue.id[0] != " ":
+                continue
+
+            name = residue.resname.strip()
+
+            if name in DNA_RES:
+                hasDNA = True
+            elif name in RNA_RES:
+                hasRNA = True
+
+        if hasDNA:
+            return "dna"
+        if hasRNA:
+            return "rna"
+        return "protein"

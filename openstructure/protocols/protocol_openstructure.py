@@ -51,7 +51,123 @@ class LigandSelect(Select):
 
 class ProtCompareStructures(EMProtocol):
     """
+    AI Generated:
 
+    This protocol compares a predicted macromolecular structure against a
+    reference structure using OpenStructure (OST). It computes a comprehensive
+    set of global and interface-level structural similarity metrics, generates
+    superposed structures, and annotates the predicted model with per-residue
+    Local LDDT scores for visualization and downstream analysis.
+
+    The protocol supports both monomeric and multimeric structures and can
+    optionally compute backbone-only LDDT and quaternary structure similarity
+    (QS-score).
+
+    Core Concepts
+    -------------
+    LDDT:
+        Local Distance Difference Test, a superposition-independent metric that
+        measures local structural agreement between the predicted and reference
+        structures.
+
+    Local LDDT:
+        Per-residue LDDT score describing the local accuracy of each residue.
+        The protocol stores these values in the occupancy column of the output
+        PDB file, allowing direct visualization in molecular graphics software.
+
+    TM-score:
+        Length-independent measure of global structural similarity between two
+        structures.
+
+    DockQ:
+        Interface quality metric for protein complexes, combining interface
+        RMSD, ligand RMSD, and native contact recovery into a single score.
+
+    QS-score:
+        Quaternary Structure Score measuring the similarity between the
+        interfaces and overall organization of two macromolecular complexes.
+
+    GDT Scores:
+        Global Distance Test metrics (GDT-TS and GDT-HA) evaluating structural
+        similarity under different distance thresholds.
+
+    Workflow
+    --------
+    1. Convert input structures to PDB format if necessary.
+    2. Perform structural comparison using OpenStructure.
+    3. Compute global structural similarity metrics.
+    4. Optionally compute backbone-only LDDT.
+    5. Optionally compute QS-score for multimeric assemblies.
+    6. Compute per-residue Local LDDT values.
+    7. Write Local LDDT scores into the occupancy field of the predicted model.
+    8. Export the superposed model and reference structures.
+
+    Input
+    -----
+    - inputModel:
+        Predicted structure to evaluate.
+
+    - inputReference:
+        Reference (native or experimental) structure.
+
+    Parameters
+    ----------
+    - Chain mapping:
+        Optional correspondence between chains of the predicted and reference
+        structures. Useful when chain identifiers differ or when only selected
+        interfaces should be evaluated.
+
+    - Generate backbone LDDT:
+        Computes LDDT using only backbone atoms (CA for proteins and C3' for
+        nucleic acids).
+
+    - Compute QS-score:
+        Calculates the Quaternary Structure Score to evaluate similarity
+        between multimeric assemblies.
+
+    Computed Metrics
+    ----------------
+    Depending on the selected options, the protocol reports:
+
+    - Global LDDT
+    - Backbone LDDT
+    - TM-score
+    - DockQ (average and weighted)
+    - QS-score
+    - GDT-TS
+    - GDT-HA
+    - Global RMSD after rigid-body superposition
+
+    For multimeric complexes, the protocol also reports per-interface:
+
+    - QS-score
+    - DockQ
+    - Interface RMSD (iRMSD)
+
+    Output
+    ------
+    - outputCleanStructures:
+        A SetOfAtomStructs containing the superposed predicted model and
+        reference structure.
+
+    The predicted model contains the Local LDDT score of every residue stored
+    in the occupancy field, enabling residue-level coloring in molecular
+    visualization software such as ChimeraX or PyMOL.
+
+    Additional Files
+    ----------------
+    - compare_structures.json:
+        JSON report containing all global, interface-level, and per-residue
+        comparison metrics produced by OpenStructure.
+
+    Use Cases
+    ---------
+    - Evaluating predicted structures against experimental references
+    - Benchmarking protein structure prediction methods
+    - Assessing protein complex and multimer accuracy
+    - Comparing refined models
+    - Visualizing residue-level prediction accuracy using Local LDDT
+    - Measuring interface similarity in macromolecular assemblies
     """
     _label = 'compare structures'
 
@@ -64,17 +180,16 @@ class ProtCompareStructures(EMProtocol):
                       label="Input predicted model: ",
                       help='Select the predicted model.')
 
-        form.addParam('ligand', params.BooleanParam, default=False,
-                      label='Include docked ligand in comparison: ',
-                      help="Perform comparison with ligand included."
-                      )
-        form.addParam('inputLigands', params.PointerParam, allowsNull=True, condition='ligand',
-                      pointerClass='SetOfSmallMolecules',
-                      label="Set of ligands: ",
-                      help='Select the set of ligands docked in model.')
-        form.addParam('inputMolecule', params.StringParam, condition='ligand',
-                       label="Docked molecule: ",
-                       help='Ligand of interest that is docked in model structure.')
+        #form.addParam('ligand', params.BooleanParam, default=False,
+        #              label='Include docked ligand in comparison: ',
+        #              help="Perform comparison with ligand included.")
+        #form.addParam('inputLigands', params.PointerParam, allowsNull=True, condition='ligand',
+        #              pointerClass='SetOfSmallMolecules',
+        #              label="Set of ligands: ",
+        #              help='Select the set of ligands docked in model.')
+        #form.addParam('inputMolecule', params.StringParam, condition='ligand',
+        #               label="Docked molecule: ",
+        #               help='Ligand of interest that is docked in model structure.')
 
         form.addParam('inputReference', params.PointerParam, allowsNull=False,
                       pointerClass='AtomStruct',
@@ -89,11 +204,11 @@ class ProtCompareStructures(EMProtocol):
                             'of native chain L, the flag can be set as: "--mapping AB:HL". This can also help limit the search to specific native interfaces. For example, if the native is a tetramer (ABCD) but the user is only interested in the \n'
                             'interface between chains B and C, the flag can be set as: "--mapping :BC" or the equivalent "--mapping *:BC".'
                        )
-        group.addParam('backboneLDDT', params.BooleanParam, default=False,
+        group.addParam('backboneLDDT', params.BooleanParam, default=True,
                        label='Generate backbone lddt: ',
                        help="LDDT in this case is only computed on backbone atoms: CA for peptides and C3' for nucleotides."
                        )
-        group.addParam('qsScore', params.BooleanParam, default=False,
+        group.addParam('qsScore', params.BooleanParam, default=True,
                        label='Compute QS score: ',
                        help="The QS-score (Quaternary Structure Score) is a metric designed to compare the quaternary structure of two macromolecular complexes. \n"
                             "Evaluates how similar the interfaces between chains are."
@@ -104,12 +219,12 @@ class ProtCompareStructures(EMProtocol):
     # --------------------------- STEPS functions ------------------------------
     def _insertAllSteps(self):
         self._insertFunctionStep(self.convertFilesStep)
-        if not self.ligand.get():
-            self._insertFunctionStep(self.runOSTProtStep)
-            self._insertFunctionStep(self.writeLocalLDDTToModelStep)
-        else:
-            self._insertFunctionStep(self.createSDFStep)
-            self._insertFunctionStep(self.runOSTLigStep)
+        #if not self.ligand.get():
+        self._insertFunctionStep(self.runOSTProtStep)
+        self._insertFunctionStep(self.writeLocalLDDTToModelStep)
+        #else:
+        #    self._insertFunctionStep(self.createSDFStep)
+        #    self._insertFunctionStep(self.runOSTLigStep)
 
         self._insertFunctionStep(self.createOutputStep)
 
@@ -255,8 +370,6 @@ class ProtCompareStructures(EMProtocol):
 
         self._defineOutputs(outputCleanStructures=outputSet)
 
-
-
     # --------------------------- INFO functions -----------------------------------
     def _summary(self):
         summary = []
@@ -309,15 +422,15 @@ class ProtCompareStructures(EMProtocol):
         return methods
 
     def _validate(self):
-        dockedProtein = os.path.splitext(
-            os.path.basename(os.path.abspath(self.inputLigands.get().getProteinFile()))
-        )[0]
-        inputModel = os.path.splitext(
-            os.path.basename(os.path.abspath(self.inputModel.get().getFileName()))
-        )[0]
+        #dockedProtein = os.path.splitext(
+        #    os.path.basename(os.path.abspath(self.inputLigands.get().getProteinFile()))
+        #)[0]
+        #inputModel = os.path.splitext(
+        #    os.path.basename(os.path.abspath(self.inputModel.get().getFileName()))
+        #)[0]
         validations = []
-        if dockedProtein != inputModel:
-            validations.append('Ligand selected is not docked in model structure.')
+        #if dockedProtein != inputModel:
+        #    validations.append('Ligand selected is not docked in model structure.')
         return validations
 
     def _warnings(self):
