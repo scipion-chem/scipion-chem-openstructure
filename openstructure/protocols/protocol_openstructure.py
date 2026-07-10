@@ -1,0 +1,355 @@
+# **************************************************************************
+# *
+# * Authors:   Blanca Pueche (blanca.pueche@cnb.csis.es)
+# *
+# * Unidad de  Bioinformatica of Centro Nacional de Biotecnologia , CSIC
+# *
+# * This program is free software; you can redistribute it and/or modify
+# * it under the terms of the GNU General Public License as published by
+# * the Free Software Foundation; either version 2 of the License, or
+# * (at your option) any later version.
+# *
+# * This program is distributed in the hope that it will be useful,
+# * but WITHOUT ANY WARRANTY; without even the implied warranty of
+# * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# * GNU General Public License for more details.
+# *
+# * You should have received a copy of the GNU General Public License
+# * along with this program; if not, write to the Free Software
+# * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
+# * 02111-1307  USA
+# *
+# *  All comments concerning this program package may be sent to the
+# *  e-mail address 'scipion@cnb.csic.es'
+# *
+# **************************************************************************
+import json
+import shutil
+
+import os, json
+from Bio.PDB import PDBParser, MMCIFParser, PDBIO, Select
+import pyworkflow.protocol.params as params
+from pyworkflow.protocol.constants import LEVEL_ADVANCED
+from pwem.protocols import EMProtocol
+from pyworkflow.object import String
+
+from openstructure.__init__ import Plugin
+from pwchem.__init__ import Plugin as pwchemPlugin
+from pwem.objects.data import AtomStruct, SetOfAtomStructs
+from pwchem.objects.base import SmallMolecule, SetOfSmallMolecules
+from pwem.convert import cifToPdb
+
+from openstructure import OPENSTRUCT_DIC
+from pwchem.constants import OPENBABEL_DIC
+
+
+class LigandSelect(Select):
+    def accept_residue(self, residue):
+        # Keep only hetero residues (ligands), skip waters
+        return residue.id[0].startswith("H_") and residue.get_resname() != "HOH"
+
+
+class ProtCompareStructures(EMProtocol):
+    """
+
+    """
+    _label = 'compare structures'
+
+    # -------------------------- DEFINE param functions ----------------------
+    def _defineParams(self, form):
+        form.addSection(label='Input')
+
+        form.addParam('inputModel', params.PointerParam, allowsNull=True,
+                      pointerClass='AtomStruct',
+                      label="Input predicted model: ",
+                      help='Select the predicted model.')
+
+        form.addParam('ligand', params.BooleanParam, default=False,
+                      label='Include docked ligand in comparison: ',
+                      help="Perform comparison with ligand included."
+                      )
+        form.addParam('inputLigands', params.PointerParam, allowsNull=True, condition='ligand',
+                      pointerClass='SetOfSmallMolecules',
+                      label="Set of ligands: ",
+                      help='Select the set of ligands docked in model.')
+        form.addParam('inputMolecule', params.StringParam, condition='ligand',
+                       label="Docked molecule: ",
+                       help='Ligand of interest that is docked in model structure.')
+
+        form.addParam('inputReference', params.PointerParam, allowsNull=False,
+                      pointerClass='AtomStruct',
+                      label="Input reference structure: ",
+                      help='Select the reference structure.')
+
+
+        group = form.addGroup('Parameters')
+        group.addParam('mapping', params.StringParam, default='', expertLevel = LEVEL_ADVANCED,
+                       label='Chain mapping',
+                       help='Specify a chain mapping between model and native structure. If the native contains two chains "H" and "L" while the model contains two chains "A" and "B", and chain A is a model of native chain H and chain B is a model\n '
+                            'of native chain L, the flag can be set as: "--mapping AB:HL". This can also help limit the search to specific native interfaces. For example, if the native is a tetramer (ABCD) but the user is only interested in the \n'
+                            'interface between chains B and C, the flag can be set as: "--mapping :BC" or the equivalent "--mapping *:BC".'
+                       )
+        group.addParam('backboneLDDT', params.BooleanParam, default=False,
+                       label='Generate backbone lddt: ',
+                       help="LDDT in this case is only computed on backbone atoms: CA for peptides and C3' for nucleotides."
+                       )
+        group.addParam('qsScore', params.BooleanParam, default=False,
+                       label='Compute QS score: ',
+                       help="The QS-score (Quaternary Structure Score) is a metric designed to compare the quaternary structure of two macromolecular complexes. \n"
+                            "Evaluates how similar the interfaces between chains are."
+                       )
+
+        form.addParallelSection(threads=4, mpi=1)
+
+    # --------------------------- STEPS functions ------------------------------
+    def _insertAllSteps(self):
+        self._insertFunctionStep(self.convertFilesStep)
+        if not self.ligand.get():
+            self._insertFunctionStep(self.runOSTProtStep)
+            self._insertFunctionStep(self.writeLocalLDDTToModelStep)
+        else:
+            self._insertFunctionStep(self.createSDFStep)
+            self._insertFunctionStep(self.runOSTLigStep)
+
+        self._insertFunctionStep(self.createOutputStep)
+
+    def createSDFStep(self):
+        ligand = os.path.abspath(self.getDockedLigand().getFileName())
+        ligandSdf = os.path.abspath(self._getExtraPath('ligand.sdf'))
+
+        args = ' -i "{}" -of {} -o {}'.format(ligand, 'sdf', ligandSdf)
+        pwchemPlugin.runScript(self, 'obabel_IO.py', args, env=OPENBABEL_DIC, cwd=self._getExtraPath())
+
+        #todo extract ligand from ref file and convert to sdf
+        refFile = os.path.abspath(self.inputReference.get().getFileName())
+        refLigand = os.path.abspath(self._getExtraPath("reference_ligand.pdb"))
+
+        self.extractLigand(refFile, refLigand)
+
+        refLigandSdf = self._getExtraPath("reference_ligand.sdf")
+
+        args = f'-i "{refLigand}" -of sdf -o "{refLigandSdf}"'
+        pwchemPlugin.runScript(
+            self, "obabel_IO.py", args,
+            env=OPENBABEL_DIC,
+            cwd=self._getExtraPath()
+        )
+
+    def convertFilesStep(self):
+        inModel = self.inputModel.get().getFileName()
+        inpPDBModel = self._getExtraPath("model.pdb")
+        self.convertOrCopy(inModel, inpPDBModel)
+        inRef = self.inputReference.get().getFileName()
+        inpPDBRef = self._getExtraPath("reference.pdb")
+        self.convertOrCopy(inRef, inpPDBRef)
+
+    def runOSTProtStep(self):
+        args = []
+        args.extend([
+            "-m", str(os.path.abspath(self._getExtraPath("model.pdb"))),
+            "-r", str(os.path.abspath(self._getExtraPath("reference.pdb"))),
+            "-o", str(os.path.abspath(self._getPath('compare_structures.json'))),
+            '-d',
+            '--lddt',
+            '--dockq',
+            '--tm-score',
+            '--rigid-scores', #GDT scores
+            '--local-lddt'
+        ])
+
+        if self.mapping.get() != '':
+            args += ['-c', self.mapping.get()]
+        if self.backboneLDDT.get():
+            args.append('--bb-lddt')
+        if self.qsScore.get():
+            args.append('--qs-score')
+
+        Plugin.runCondaCommand(
+            self,
+            args=" ".join(args),
+            condaDic=OPENSTRUCT_DIC,
+            program="ost compare-structures",
+            cwd=os.path.abspath(Plugin.getVar(OPENSTRUCT_DIC['home']))
+        )
+
+    def runOSTLigStep(self):
+        args = []
+        args = []
+        args.extend([
+            "-m", str(os.path.abspath(self._getExtraPath("model.pdb"))),
+            "-ml", str(os.path.abspath(self._getExtraPath("ligand.sdf"))),
+            "-r", str(os.path.abspath(self._getExtraPath("reference.pdb"))),
+            "-rl", str(os.path.abspath(self._getExtraPath("reference_ligand.sdf"))),
+            "-o", str(os.path.abspath(self._getPath('compare_structures.json'))),
+            '--lddt-pli',
+            '--rmsd'
+        ])
+
+        if self.mapping.get() != '':
+            args += ['-c', self.mapping.get()]
+        if self.backboneLDDT.get():
+            args.append('--bb-lddt')
+        if self.qsScore.get():
+            args.append('--qs-score')
+
+        Plugin.runCondaCommand(
+            self,
+            args=" ".join(args),
+            condaDic=OPENSTRUCT_DIC,
+            program="ost compare-ligand-structures",
+            cwd=os.path.abspath(Plugin.getVar(OPENSTRUCT_DIC['home']))
+        )
+
+    def writeLocalLDDTToModelStep(self):
+        jsonFile = self._getPath("compare_structures.json")
+        modelFile = self._getExtraPath("model_compare_structures.pdb")
+
+        if not os.path.exists(jsonFile):
+            raise FileNotFoundError(jsonFile)
+
+        if not os.path.exists(modelFile):
+            raise FileNotFoundError(modelFile)
+
+        with open(jsonFile) as f:
+            data = json.load(f)
+
+        local_lddt = data.get("local_lddt", {})
+
+        parser = PDBParser(QUIET=True)
+        structure = parser.get_structure("model", modelFile)
+
+        for model in structure:
+            for chain in model:
+                for residue in chain:
+                    if residue.id[0] != " ":
+                        continue
+                    chainId = chain.id
+                    resNum = residue.id[1]
+                    insCode = residue.id[2].strip()
+
+                    key = f"{chainId}.{resNum}.{insCode}"
+                    score = local_lddt.get(key)
+                    if score is None:
+                        score = 0.0
+                    for atom in residue:
+                        atom.set_occupancy(float(score))
+        io = PDBIO()
+        io.set_structure(structure)
+        io.save(modelFile)
+
+    def createOutputStep(self):
+        outputSet = SetOfAtomStructs().create(outputPath=self._getPath())
+
+        modelFile = self._getExtraPath("model_compare_structures.pdb")
+        refFile = self._getExtraPath("reference_compare_structures.pdb")
+
+        if os.path.exists(modelFile):
+            model = AtomStruct()
+            model.setFileName(modelFile)
+            outputSet.append(model)
+
+        if os.path.exists(refFile):
+            reference = AtomStruct()
+            reference.setFileName(refFile)
+            outputSet.append(reference)
+
+        self._defineOutputs(outputCleanStructures=outputSet)
+
+
+
+    # --------------------------- INFO functions -----------------------------------
+    def _summary(self):
+        summary = []
+
+        json_path = os.path.abspath(self._getPath('compare_structures.json'))
+
+        if not os.path.exists(json_path):
+            return ["Comparison JSON file not found"]
+
+        with open(json_path, "r") as f:
+            results = json.load(f)
+
+        def format_value(key):
+            value = results.get(key)
+            if isinstance(value, (int, float)):
+                return f"{value:.3f}"
+            return str(value) if value is not None else "N/A"
+
+        summary.append(f"LDDT: {format_value('lddt')}")
+        summary.append(f"Backbone LDDT: {format_value('bb_lddt')}")
+        summary.append(f"TM-score: {format_value('tm_score')}")
+        summary.append(f"QS-score (global): {format_value('qs_global')}")
+        summary.append(f"DockQ (average): {format_value('dockq_ave')}")
+        summary.append(f"DockQ (weighted): {format_value('dockq_wave')}")
+        summary.append(f"GDT-TS: {format_value('oligo_gdtts')}")
+        summary.append(f"GDT-HA: {format_value('oligo_gdtha')}")
+        summary.append(f"Global RMSD (after rigid superposition): {format_value('rmsd')} Å")
+
+        chains = results.get("model_chains", [])
+        summary.append(f"Number of chains: {len(chains)}")
+
+        qs_interfaces = results.get("qs_interfaces", [])
+        qs_scores = results.get("per_interface_qs_global", [])
+        dockq_scores = results.get("dockq", [])
+        irmsd_scores = results.get("irmsd", [])
+
+        if qs_interfaces:
+            summary.append("\nPer-interface scores:")
+            for interface, qs, dockq, irmsd in zip(
+                    qs_interfaces, qs_scores, dockq_scores, irmsd_scores):
+                summary.append(
+                    f"{interface[0]}-{interface[1]}: "
+                    f"QS={qs:.3f},    DockQ={dockq:.3f},    iRMSD={irmsd:.3f} Å"
+                )
+
+        return summary
+
+    def _methods(self):
+        methods = []
+        return methods
+
+    def _validate(self):
+        dockedProtein = os.path.splitext(
+            os.path.basename(os.path.abspath(self.inputLigands.get().getProteinFile()))
+        )[0]
+        inputModel = os.path.splitext(
+            os.path.basename(os.path.abspath(self.inputModel.get().getFileName()))
+        )[0]
+        validations = []
+        if dockedProtein != inputModel:
+            validations.append('Ligand selected is not docked in model structure.')
+        return validations
+
+    def _warnings(self):
+        warnings = []
+        return warnings
+
+    # --------------------------- UTILS functions -----------------------------------
+    def convertOrCopy(self, inModel, inpPDBModel):
+        if inModel.endswith('.cif'):
+            cifToPdb(inModel, inpPDBModel)
+        else:
+            shutil.copy(inModel, inpPDBModel)
+
+    def getDockedLigand(self):
+        myMol = None
+        for mol in self.inputLigands.get():
+            if mol.__str__() == self.inputMolecule.get():
+                myMol = mol.clone()
+                break
+
+        if myMol is None:
+            print('The input ligand is not found')
+        return myMol
+
+    def extractLigand(self, refFile, outFile):
+        if refFile.endswith(".cif"):
+            parser = MMCIFParser(QUIET=True)
+        else:
+            parser = PDBParser(QUIET=True)
+
+        structure = parser.get_structure("ref", refFile)
+
+        io = PDBIO()
+        io.set_structure(structure)
+        io.save(outFile, LigandSelect())

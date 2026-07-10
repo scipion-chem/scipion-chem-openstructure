@@ -1,0 +1,1 @@
+from .ost_viewer import ProtCompareStructuresViewer
