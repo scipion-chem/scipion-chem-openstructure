@@ -1,6 +1,6 @@
 # **************************************************************************
 # *
-# * Authors: Yunior C. Fonseca Reyna    (cfonseca@cnb.csic.es)
+# * Authors: Blanca Pueche (blanca.pueche@cnb.csic.es)
 # *
 # *
 # * Unidad de  Bioinformatica of Centro Nacional de Biotecnologia , CSIC
@@ -25,3 +25,4 @@
 # *
 # **************************************************************************
 
+from .test_compareStructs import  TestCompareStructures
