@@ -166,16 +166,17 @@ class ProtCompareStructuresViewer(pwviewer.ProtocolViewer):
         plt.show()
 
     def _viewInterfaces(self, param=None):
-
         jsonFile = self.protocol._getPath("compare_structures.json")
-
         with open(jsonFile) as f:
             data = json.load(f)
 
-        interfaces = data.get("qs_interfaces", [])
-
         from tkinter import messagebox
-        if not interfaces:
+        import numpy as np
+
+        qs_interfaces = data.get("qs_interfaces", [])
+        dockq_interfaces = data.get("dockq_interfaces", [])
+
+        if not qs_interfaces and not dockq_interfaces:
             messagebox.showwarning(
                 "No interface scores",
                 "No interfaces were detected.\n\n"
@@ -183,25 +184,45 @@ class ProtCompareStructuresViewer(pwviewer.ProtocolViewer):
             )
             return []
 
-        qs = data["per_interface_qs_global"]
-        dockq = data["dockq"]
-        irmsd = data["irmsd"]
+        qs = data.get("per_interface_qs_global", [])
+        dockq = data.get("dockq", [])
+        irmsd = data.get("irmsd", [])
 
-        plt.figure(figsize=(8, 5))
+        fig, (ax1, ax2) = plt.subplots(
+            2, 1,
+            figsize=(max(10, len(qs_interfaces) * 0.4), 8)
+        )
 
-        labels = [f"{i[0]}-{i[1]}" for i in interfaces]
+        # ------------------------
+        # QS-score
+        # ------------------------
+        if qs_interfaces:
+            labels = [f"{i[0]}-{i[1]}" for i in qs_interfaces]
+            x = np.arange(len(labels))
 
-        x = range(len(labels))
-        w = 0.25
+            ax1.bar(x, qs)
+            ax1.set_title("Per-interface QS-score")
+            ax1.set_ylabel("QS")
+            ax1.set_xticks(x)
+            ax1.set_xticklabels(labels, rotation=60, ha="right")
+            ax1.set_ylim(0, 1.05)
 
-        plt.bar([i - w for i in x], qs, width=w, label="QS")
-        plt.bar(x, dockq, width=w, label="DockQ")
-        plt.bar([i + w for i in x], irmsd, width=w, label="iRMSD (Å)")
+        # ------------------------
+        # DockQ + iRMSD
+        # ------------------------
+        if dockq_interfaces:
+            labels = [f"{i[0]}-{i[1]}" for i in dockq_interfaces]
+            x = np.arange(len(labels))
+            w = 0.35
 
-        plt.xticks(x, labels)
-        plt.ylabel("Score")
-        plt.title("Per-interface comparison")
-        plt.legend()
+            ax2.bar(x - w / 2, dockq, width=w, label="DockQ")
+            ax2.bar(x + w / 2, irmsd, width=w, label="iRMSD (Å)")
+
+            ax2.set_title("Per-interface DockQ / iRMSD")
+            ax2.set_ylabel("Score")
+            ax2.set_xticks(x)
+            ax2.set_xticklabels(labels, rotation=60, ha="right")
+            ax2.legend()
 
         plt.tight_layout()
         plt.show()

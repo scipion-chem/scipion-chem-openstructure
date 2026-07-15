@@ -407,12 +407,23 @@ class ProtCompareStructures(EMProtocol):
         irmsd_scores = results.get("irmsd", [])
 
         if qs_interfaces:
-            summary.append("\nPer-interface scores:")
-            for interface, qs, dockq, irmsd in zip(
-                    qs_interfaces, qs_scores, dockq_scores, irmsd_scores):
+            summary.append("\nPer-interface QS scores:")
+            for interface, qs in zip(qs_interfaces, qs_scores):
+                summary.append(
+                    f"{interface[0]}-{interface[1]}: QS={qs:.3f}"
+                )
+
+        dockq_interfaces = results.get("dockq_interfaces", [])
+        dockq_scores = results.get("dockq", [])
+        irmsd_scores = results.get("irmsd", [])
+
+        if dockq_interfaces:
+            summary.append("\nPer-interface DockQ scores:")
+            for interface, dockq, irmsd in zip(
+                    dockq_interfaces, dockq_scores, irmsd_scores):
                 summary.append(
                     f"{interface[0]}-{interface[1]}: "
-                    f"QS={qs:.3f},    DockQ={dockq:.3f},    iRMSD={irmsd:.3f} Å"
+                    f"DockQ={dockq:.3f},    iRMSD={irmsd:.3f} Å"
                 )
 
         return summary
