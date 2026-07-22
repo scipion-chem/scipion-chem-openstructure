@@ -49,6 +49,6 @@ class TestCompareStructures(BaseTest):
 
     def test(self):
         protOST = self._runOST()
-        self._waitOutput(protOST, 'outputAtomStructs', sleepTime=5)
+        self._waitOutput(protOST, 'outputAtomStruct', sleepTime=5)
 
-        assertHandle(self.assertIsNotNone, getattr(protOST, 'outputAtomStructs', None), cwd=protOST.getWorkingDir())
+        assertHandle(self.assertIsNotNone, getattr(protOST, 'outputAtomStruct', None), cwd=protOST.getWorkingDir())

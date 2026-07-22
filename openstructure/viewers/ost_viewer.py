@@ -85,10 +85,13 @@ class ProtCompareStructuresViewer(pwviewer.ProtocolViewer):
 
     def _viewAlignmentPlain(self, paramName=None):
         fnCmd = self.protocol._getExtraPath("chimera_compare.cxc")
-        structures = [s.clone() for s in self.protocol.outputCleanStructures]
 
-        modelFile = os.path.abspath(structures[0].getFileName())
-        refFile = os.path.abspath(structures[1].getFileName())
+        modelFile = os.path.abspath(
+            self.protocol.outputAtomStruct.getFileName()
+        )
+        refFile = os.path.abspath(
+            self.protocol._getExtraPath("reference_compare_structures.pdb")
+        )
 
         with open(fnCmd, "w") as f:
             f.write(f"open {refFile}\n")
@@ -105,10 +108,13 @@ class ProtCompareStructuresViewer(pwviewer.ProtocolViewer):
     def _viewAlignmentLDDT(self, paramName=None):
 
         fnCmd = self.protocol._getExtraPath("chimera_lddt.cxc")
-        structures = [s.clone() for s in self.protocol.outputCleanStructures]
 
-        modelFile = os.path.abspath(structures[0].getFileName())
-        refFile = os.path.abspath(structures[1].getFileName())
+        modelFile = os.path.abspath(
+            self.protocol.outputAtomStruct.getFileName()
+        )
+        refFile = os.path.abspath(
+            self.protocol._getExtraPath("reference_compare_structures.pdb")
+        )
 
         with open(fnCmd, "w") as f:
             f.write(f"open {refFile}\n")
@@ -269,8 +275,9 @@ class ProtCompareStructuresViewer(pwviewer.ProtocolViewer):
         pmlDir = os.path.abspath(self.protocol._getExtraPath("plip_interface"))
         os.makedirs(pmlDir, exist_ok=True)
 
-        structures = [s.clone() for s in self.protocol.outputCleanStructures]
-        modelFile = os.path.abspath(structures[0].getFileName())
+        modelFile = os.path.abspath(
+            self.protocol.outputAtomStruct.getFileName()
+        )
 
         if stype == "dna" or stype == "rna":
             args = f"-f {modelFile} --dnareceptor --inter {chain} -y -o {pmlDir}"
@@ -303,8 +310,9 @@ class ProtCompareStructuresViewer(pwviewer.ProtocolViewer):
         )
 
     def _getStructureType(self):
-        structures = [s.clone() for s in self.protocol.outputCleanStructures]
-        modelFile = os.path.abspath(structures[0].getFileName())
+        modelFile = os.path.abspath(
+            self.protocol.outputAtomStruct.getFileName()
+        )
 
         parser = PDBParser(QUIET=True)
         structure = parser.get_structure("model", modelFile)

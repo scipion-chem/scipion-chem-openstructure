@@ -31,7 +31,7 @@ from Bio.PDB import PDBParser, MMCIFParser, PDBIO, Select
 import pyworkflow.protocol.params as params
 from pyworkflow.protocol.constants import LEVEL_ADVANCED
 from pwem.protocols import EMProtocol
-from pyworkflow.object import String
+from pyworkflow.object import String, Float
 
 from openstructure.__init__ import Plugin
 from pwchem.__init__ import Plugin as pwchemPlugin
@@ -146,9 +146,13 @@ class ProtCompareStructures(EMProtocol):
 
     Output
     ------
-    - outputCleanStructures:
-        A SetOfAtomStructs containing the superposed predicted model and
-        reference structure.
+    - outputAtomStruct:
+        Predicted structure after superposition onto the reference.
+
+    The model contains:
+        - Per-residue Local LDDT stored in the occupancy column.
+        - Global comparison metrics (LDDT, TM-score, RMSD, DockQ, QS-score, etc.)
+            stored as object attributes for downstream protocols.
 
     The predicted model contains the Local LDDT score of every residue stored
     in the occupancy field, enabling residue-level coloring in molecular
@@ -180,17 +184,6 @@ class ProtCompareStructures(EMProtocol):
                       label="Input predicted model: ",
                       help='Select the predicted model.')
 
-        #form.addParam('ligand', params.BooleanParam, default=False,
-        #              label='Include docked ligand in comparison: ',
-        #              help="Perform comparison with ligand included.")
-        #form.addParam('inputLigands', params.PointerParam, allowsNull=True, condition='ligand',
-        #              pointerClass='SetOfSmallMolecules',
-        #              label="Set of ligands: ",
-        #              help='Select the set of ligands docked in model.')
-        #form.addParam('inputMolecule', params.StringParam, condition='ligand',
-        #               label="Docked molecule: ",
-        #               help='Ligand of interest that is docked in model structure.')
-
         form.addParam('inputReference', params.PointerParam, allowsNull=False,
                       pointerClass='AtomStruct',
                       label="Input reference structure: ",
@@ -219,36 +212,10 @@ class ProtCompareStructures(EMProtocol):
     # --------------------------- STEPS functions ------------------------------
     def _insertAllSteps(self):
         self._insertFunctionStep(self.convertFilesStep)
-        #if not self.ligand.get():
         self._insertFunctionStep(self.runOSTProtStep)
         self._insertFunctionStep(self.writeLocalLDDTToModelStep)
-        #else:
-        #    self._insertFunctionStep(self.createSDFStep)
-        #    self._insertFunctionStep(self.runOSTLigStep)
 
         self._insertFunctionStep(self.createOutputStep)
-
-    def createSDFStep(self):
-        ligand = os.path.abspath(self.getDockedLigand().getFileName())
-        ligandSdf = os.path.abspath(self._getExtraPath('ligand.sdf'))
-
-        args = ' -i "{}" -of {} -o {}'.format(ligand, 'sdf', ligandSdf)
-        pwchemPlugin.runScript(self, 'obabel_IO.py', args, env=OPENBABEL_DIC, cwd=self._getExtraPath())
-
-        #todo extract ligand from ref file and convert to sdf
-        refFile = os.path.abspath(self.inputReference.get().getFileName())
-        refLigand = os.path.abspath(self._getExtraPath("reference_ligand.pdb"))
-
-        self.extractLigand(refFile, refLigand)
-
-        refLigandSdf = self._getExtraPath("reference_ligand.sdf")
-
-        args = f'-i "{refLigand}" -of sdf -o "{refLigandSdf}"'
-        pwchemPlugin.runScript(
-            self, "obabel_IO.py", args,
-            env=OPENBABEL_DIC,
-            cwd=self._getExtraPath()
-        )
 
     def convertFilesStep(self):
         inModel = self.inputModel.get().getFileName()
@@ -284,34 +251,6 @@ class ProtCompareStructures(EMProtocol):
             args=" ".join(args),
             condaDic=OPENSTRUCT_DIC,
             program="ost compare-structures",
-            cwd=os.path.abspath(Plugin.getVar(OPENSTRUCT_DIC['home']))
-        )
-
-    def runOSTLigStep(self):
-        args = []
-        args = []
-        args.extend([
-            "-m", str(os.path.abspath(self._getExtraPath("model.pdb"))),
-            "-ml", str(os.path.abspath(self._getExtraPath("ligand.sdf"))),
-            "-r", str(os.path.abspath(self._getExtraPath("reference.pdb"))),
-            "-rl", str(os.path.abspath(self._getExtraPath("reference_ligand.sdf"))),
-            "-o", str(os.path.abspath(self._getPath('compare_structures.json'))),
-            '--lddt-pli',
-            '--rmsd'
-        ])
-
-        if self.mapping.get() != '':
-            args += ['-c', self.mapping.get()]
-        if self.backboneLDDT.get():
-            args.append('--bb-lddt')
-        if self.qsScore.get():
-            args.append('--qs-score')
-
-        Plugin.runCondaCommand(
-            self,
-            args=" ".join(args),
-            condaDic=OPENSTRUCT_DIC,
-            program="ost compare-ligand-structures",
             cwd=os.path.abspath(Plugin.getVar(OPENSTRUCT_DIC['home']))
         )
 
@@ -353,22 +292,35 @@ class ProtCompareStructures(EMProtocol):
         io.save(modelFile)
 
     def createOutputStep(self):
-        outputSet = SetOfAtomStructs().create(outputPath=self._getPath())
+        jsonFile = self._getPath("compare_structures.json")
+        stats = {}
+        if os.path.exists(jsonFile):
+            with open(jsonFile) as f:
+                stats = json.load(f)
 
         modelFile = self._getExtraPath("model_compare_structures.pdb")
-        refFile = self._getExtraPath("reference_compare_structures.pdb")
+        if not os.path.exists(modelFile):
+            raise FileNotFoundError(modelFile)
 
-        if os.path.exists(modelFile):
-            model = AtomStruct()
-            model.setFileName(modelFile)
-            outputSet.append(model)
+        model = self.inputModel.get().clone()
+        model.setFileName(modelFile)
 
-        if os.path.exists(refFile):
-            reference = AtomStruct()
-            reference.setFileName(refFile)
-            outputSet.append(reference)
+        for jsonKey, attrName in [
+            ("lddt", "_lddt"),
+            ("bb_lddt", "_bbLddt"),
+            ("tm_score", "_tmScore"),
+            ("qs_global", "_qsScore"),
+            ("dockq_ave", "_dockQAve"),
+            ("dockq_wave", "_dockQWeighted"),
+            ("oligo_gdtts", "_gdtTs"),
+            ("oligo_gdtha", "_gdtHa"),
+            ("rmsd", "_rmsd"),
+        ]:
+            value = stats.get(jsonKey)
+            if value is not None:
+                setattr(model, attrName, Float(value))
 
-        self._defineOutputs(outputCleanStructures=outputSet)
+        self._defineOutputs(outputAtomStruct=model)
 
     # --------------------------- INFO functions -----------------------------------
     def _summary(self):
