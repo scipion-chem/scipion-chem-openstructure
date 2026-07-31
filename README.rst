@@ -27,7 +27,7 @@ OpenStructure is installed automatically by scipion.
 
 .. code-block::
 
-    scipion3 installp -p scipion-em-openstructure
+    scipion3 installp -p scipion-chem-openstructure
 
 
 - **Developer's version**
@@ -36,7 +36,7 @@ OpenStructure is installed automatically by scipion.
 
     .. code-block::
 
-        git clone https://github.com/scipion-em/scipion-em-openstructure.git
+        git clone https://github.com/scipion-chem/scipion-chem-openstructure.git
 
     2. **Switch to the desired branch** (master or devel):
 
@@ -46,14 +46,14 @@ OpenStructure is installed automatically by scipion.
 
     .. code-block::
 
-                cd scipion-em-openstructure
+                cd scipion-chem-openstructure
                 git checkout devel
 
     3. **Install**:
 
     .. code-block::
 
-        scipion3 installp -p path_to_scipion-em-openstructure --devel
+        scipion3 installp -p path_to_scipion-chem-openstructure --devel
 
 
 
