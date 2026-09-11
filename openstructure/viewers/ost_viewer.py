@@ -129,7 +129,7 @@ class ProtCompareStructuresViewer(pwviewer.ProtocolViewer):
             f.write("match #2 to #1\n")
             f.write("color byattribute occupancy palette white:mintcream:lightgreen:forestgreen:darkgreen\n")
             f.write("key white:0 lightgreen:0.5 darkgreen:1\n")
-            f.write("color #1 lightblue\n")
+            f.write("color #1 cornflowerblue\n")
             f.write("view orient\n")
 
         return [Chimera.runProgram(Chimera.getProgram(), fnCmd + "&")]
